@@ -37,9 +37,10 @@ class CardProject(BaseModel):
     name: StrictStr
     description: StrictStr
     created_at: datetime = Field(alias="createdAt")
-    is_public: Optional[StrictBool] = Field(default=None, description="When true, the project is viewable at /p/{projectId} as a searchable public card gallery with TCG Schema microdata. ", alias="isPublic")
+    slug: Optional[StrictStr] = Field(default=None, description="URL-safe slug used in the public card archive URL (/p/{slug})")
+    is_public: Optional[StrictBool] = Field(default=None, description="When true, the project is viewable at /p/{slug} as a searchable public card gallery with TCG Schema microdata. ", alias="isPublic")
     sheets: List[CardSheet]
-    __properties: ClassVar[List[str]] = ["id", "name", "description", "createdAt", "isPublic", "sheets"]
+    __properties: ClassVar[List[str]] = ["id", "name", "description", "createdAt", "slug", "isPublic", "sheets"]
 
     model_config = {
         "populate_by_name": True,
@@ -101,6 +102,7 @@ class CardProject(BaseModel):
             "name": obj.get("name"),
             "description": obj.get("description"),
             "createdAt": obj.get("createdAt"),
+            "slug": obj.get("slug"),
             "isPublic": obj.get("isPublic"),
             "sheets": [CardSheet.from_dict(_item) for _item in obj.get("sheets")] if obj.get("sheets") is not None else None
         })
