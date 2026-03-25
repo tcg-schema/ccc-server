@@ -1,0 +1,1463 @@
+openapi: 3.0.3
+info:
+  contact:
+    name: CardForge
+  description: |
+    Backend API for CardForge. Authentication is handled via GitHub App OAuth flow (server-side). The backend manages GitHub tokens and interacts with GitHub on behalf of the user.
+  title: CardForge API
+  version: 3.0.0
+servers:
+- description: CardForge backend (relative)
+  url: /api
+paths:
+  /auth/github:
+    get:
+      description: |
+        Returns a redirect URL to GitHub's authorization page. The frontend should redirect the user to this URL. The state parameter is generated server-side for CSRF protection.
+      operationId: initiateGitHubAuth
+      parameters:
+      - description: URL to redirect back to after auth completes
+        explode: true
+        in: query
+        name: return_to
+        required: false
+        schema:
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/initiateGitHubAuth_200_response"
+          description: Authorization URL
+      summary: Initiate GitHub App OAuth flow
+      tags:
+      - Auth
+  /auth/github/callback:
+    get:
+      description: |
+        Receives the authorization code from GitHub after user approves. Exchanges it for an access token via the GitHub App. Creates or updates the user session and returns a session token.
+      operationId: handleGitHubCallback
+      parameters:
+      - description: Authorization code from GitHub
+        explode: true
+        in: query
+        name: code
+        required: true
+        schema:
+          type: string
+        style: form
+      - description: CSRF state token for validation
+        explode: true
+        in: query
+        name: state
+        required: true
+        schema:
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+          description: "Authentication successful, returns session"
+        "400":
+          description: Invalid or expired code/state
+        "403":
+          description: User denied authorization
+      summary: Handle GitHub OAuth callback
+      tags:
+      - Auth
+  /auth/me:
+    get:
+      description: |
+        Returns the currently authenticated user based on the session token. The backend resolves the GitHub identity from the stored access token.
+      operationId: getMe
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthUser"
+          description: Authenticated user
+        "401":
+          description: Not authenticated or session expired
+      security:
+      - sessionAuth: []
+      summary: Get current authenticated user
+      tags:
+      - Auth
+  /auth/logout:
+    post:
+      description: |
+        Invalidates the current session token and revokes the GitHub installation token if applicable.
+      operationId: logout
+      responses:
+        "204":
+          description: Logged out successfully
+        "401":
+          description: Not authenticated
+      security:
+      - sessionAuth: []
+      summary: Log out and destroy session
+      tags:
+      - Auth
+  /auth/installations:
+    get:
+      description: |
+        Returns the GitHub App installations accessible to the authenticated user. Used to determine which organizations/accounts have the app installed.
+      operationId: listInstallations
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/Installation"
+                type: array
+          description: List of installations
+        "401":
+          description: Not authenticated
+      security:
+      - sessionAuth: []
+      summary: List GitHub App installations for the user
+      tags:
+      - Auth
+  /repos:
+    get:
+      description: |
+        Returns repositories accessible via the GitHub App installation. Filtered to repos where the user has push access.
+      operationId: listRepos
+      parameters:
+      - description: Filter by specific installation
+        explode: true
+        in: query
+        name: installation_id
+        required: false
+        schema:
+          type: integer
+        style: form
+      - explode: true
+        in: query
+        name: sort
+        required: false
+        schema:
+          default: updated
+          enum:
+          - updated
+          - created
+          - pushed
+          - full_name
+          type: string
+        style: form
+      - explode: true
+        in: query
+        name: per_page
+        required: false
+        schema:
+          default: 30
+          maximum: 100
+          type: integer
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/RepoSummary"
+                type: array
+          description: List of repositories
+        "401":
+          description: Not authenticated
+      security:
+      - sessionAuth: []
+      summary: List repositories the user can push to
+      tags:
+      - Repos
+  /projects/{projectId}/save:
+    post:
+      description: |
+        Receives the full project payload. The backend generates template.json, data.csv, card HTML files, and JSON-LD (if TCG annotations are present), then commits them to the specified GitHub repo under `cardforge/{projectName}/`.
+      operationId: saveProject
+      parameters:
+      - explode: false
+        in: path
+        name: projectId
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveProjectRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaveProjectResponse"
+          description: Project saved successfully
+        "400":
+          description: Invalid project or missing template
+        "401":
+          description: Not authenticated
+      security:
+      - sessionAuth: []
+      summary: Save a CardForge project to a GitHub repo
+      tags:
+      - Projects
+  /projects/{projectId}/load:
+    get:
+      description: |
+        Reads template.json and data.csv from the repo and reconstructs the CardProject object.
+      operationId: loadProject
+      parameters:
+      - explode: false
+        in: path
+        name: projectId
+        required: true
+        schema:
+          type: string
+        style: simple
+      - description: Full repo name (owner/repo)
+        explode: true
+        in: query
+        name: repo
+        required: true
+        schema:
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardProject"
+          description: Project loaded
+        "404":
+          description: Project not found in repo
+      security:
+      - sessionAuth: []
+      summary: Load a CardForge project from a GitHub repo
+      tags:
+      - Projects
+  /projects/{projectId}/export:
+    post:
+      description: |
+        Returns a zip archive of generated HTML cards, JSON-LD, template.json, and data.csv — without committing to a repo.
+      operationId: exportProject
+      parameters:
+      - explode: false
+        in: path
+        name: projectId
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportProjectRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/zip:
+              schema:
+                format: binary
+                type: string
+          description: Zip archive
+      security:
+      - sessionAuth: []
+      summary: Export rendered cards without saving to GitHub
+      tags:
+      - Projects
+components:
+  schemas:
+    AuthSession:
+      example:
+        session_token: session_token
+        expires_at: 2000-01-23T04:56:07.000+00:00
+        user:
+          avatar_url: https://openapi-generator.tech
+          installations:
+          - repository_selection: all
+            permissions:
+              key: permissions
+            id: 0
+            account:
+              avatar_url: https://openapi-generator.tech
+              login: login
+              type: User
+          - repository_selection: all
+            permissions:
+              key: permissions
+            id: 0
+            account:
+              avatar_url: https://openapi-generator.tech
+              login: login
+              type: User
+          name: name
+          login: octocat
+      properties:
+        session_token:
+          description: Opaque session token for subsequent API calls
+          title: session_token
+          type: string
+        user:
+          $ref: "#/components/schemas/AuthUser"
+        expires_at:
+          format: date-time
+          title: expires_at
+          type: string
+      title: AuthSession
+      type: object
+    AuthUser:
+      example:
+        avatar_url: https://openapi-generator.tech
+        installations:
+        - repository_selection: all
+          permissions:
+            key: permissions
+          id: 0
+          account:
+            avatar_url: https://openapi-generator.tech
+            login: login
+            type: User
+        - repository_selection: all
+          permissions:
+            key: permissions
+          id: 0
+          account:
+            avatar_url: https://openapi-generator.tech
+            login: login
+            type: User
+        name: name
+        login: octocat
+      properties:
+        login:
+          example: octocat
+          title: login
+          type: string
+        avatar_url:
+          format: uri
+          title: avatar_url
+          type: string
+        name:
+          nullable: true
+          title: name
+          type: string
+        installations:
+          items:
+            $ref: "#/components/schemas/Installation"
+          title: installations
+          type: array
+      title: AuthUser
+      type: object
+    Installation:
+      example:
+        repository_selection: all
+        permissions:
+          key: permissions
+        id: 0
+        account:
+          avatar_url: https://openapi-generator.tech
+          login: login
+          type: User
+      properties:
+        id:
+          description: GitHub App installation ID
+          title: id
+          type: integer
+        account:
+          $ref: "#/components/schemas/Installation_account"
+        permissions:
+          additionalProperties:
+            type: string
+          title: permissions
+          type: object
+        repository_selection:
+          enum:
+          - all
+          - selected
+          title: repository_selection
+          type: string
+      title: Installation
+      type: object
+    RepoSummary:
+      example:
+        owner: owner
+        private: true
+        full_name: octocat/my-cards
+        name: name
+        default_branch: main
+      properties:
+        full_name:
+          example: octocat/my-cards
+          title: full_name
+          type: string
+        name:
+          title: name
+          type: string
+        owner:
+          title: owner
+          type: string
+        private:
+          title: private
+          type: boolean
+        default_branch:
+          example: main
+          title: default_branch
+          type: string
+      title: RepoSummary
+      type: object
+    CardElementStyle:
+      example:
+        strokeWidth: 2.3021358869347655
+        color: color
+        iconName: iconName
+        imageUrl: https://openapi-generator.tech
+        rotation: 7.061401241503109
+        fontSize: 5.637376656633329
+        svgData: svgData
+        fontWeight: fontWeight
+      properties:
+        fontSize:
+          title: fontSize
+          type: number
+        fontWeight:
+          title: fontWeight
+          type: string
+        color:
+          title: color
+          type: string
+        iconName:
+          title: iconName
+          type: string
+        strokeWidth:
+          title: strokeWidth
+          type: number
+        svgData:
+          description: Base64 data URI of SVG
+          title: svgData
+          type: string
+        imageUrl:
+          format: uri
+          title: imageUrl
+          type: string
+        rotation:
+          title: rotation
+          type: number
+      title: CardElementStyle
+      type: object
+    CardElement:
+      example:
+        tcgType: tcgType
+        tcgProperty: tcgProperty
+        x: 0.8008281904610115
+        width: 1.4658129805029452
+        "y": 6.027456183070403
+        style:
+          strokeWidth: 2.3021358869347655
+          color: color
+          iconName: iconName
+          imageUrl: https://openapi-generator.tech
+          rotation: 7.061401241503109
+          fontSize: 5.637376656633329
+          svgData: svgData
+          fontWeight: fontWeight
+        id: id
+        tag: tag
+        type: text
+        visibleIfField: visibleIfField
+        height: 5.962133916683182
+      properties:
+        id:
+          title: id
+          type: string
+        type:
+          enum:
+          - text
+          - icon
+          - image
+          - hline
+          - vline
+          - svg
+          title: type
+          type: string
+        tag:
+          description: "Tag name, e.g. {{name}}"
+          title: tag
+          type: string
+        x:
+          title: x
+          type: number
+        "y":
+          title: "y"
+          type: number
+        width:
+          title: width
+          type: number
+        height:
+          title: height
+          type: number
+        style:
+          $ref: "#/components/schemas/CardElementStyle"
+        visibleIfField:
+          description: Show element only when this field has a non-empty value
+          title: visibleIfField
+          type: string
+        tcgType:
+          description: TCG Schema class URI (e.g. tcg:Card)
+          title: tcgType
+          type: string
+        tcgProperty:
+          description: TCG Schema property URI (e.g. schema:name)
+          title: tcgProperty
+          type: string
+      required:
+      - height
+      - id
+      - style
+      - tag
+      - type
+      - width
+      - x
+      - "y"
+      title: CardElement
+      type: object
+    CardTemplate:
+      example:
+        backgroundColor: hsl(220 18% 13%)
+        backgroundImage: backgroundImage
+        elements:
+        - tcgType: tcgType
+          tcgProperty: tcgProperty
+          x: 0.8008281904610115
+          width: 1.4658129805029452
+          "y": 6.027456183070403
+          style:
+            strokeWidth: 2.3021358869347655
+            color: color
+            iconName: iconName
+            imageUrl: https://openapi-generator.tech
+            rotation: 7.061401241503109
+            fontSize: 5.637376656633329
+            svgData: svgData
+            fontWeight: fontWeight
+          id: id
+          tag: tag
+          type: text
+          visibleIfField: visibleIfField
+          height: 5.962133916683182
+        - tcgType: tcgType
+          tcgProperty: tcgProperty
+          x: 0.8008281904610115
+          width: 1.4658129805029452
+          "y": 6.027456183070403
+          style:
+            strokeWidth: 2.3021358869347655
+            color: color
+            iconName: iconName
+            imageUrl: https://openapi-generator.tech
+            rotation: 7.061401241503109
+            fontSize: 5.637376656633329
+            svgData: svgData
+            fontWeight: fontWeight
+          id: id
+          tag: tag
+          type: text
+          visibleIfField: visibleIfField
+          height: 5.962133916683182
+        name: name
+        width: 350
+        id: id
+        height: 490
+      properties:
+        id:
+          title: id
+          type: string
+        name:
+          title: name
+          type: string
+        width:
+          example: 350
+          title: width
+          type: number
+        height:
+          example: 490
+          title: height
+          type: number
+        backgroundImage:
+          title: backgroundImage
+          type: string
+        backgroundColor:
+          example: hsl(220 18% 13%)
+          title: backgroundColor
+          type: string
+        elements:
+          items:
+            $ref: "#/components/schemas/CardElement"
+          title: elements
+          type: array
+      required:
+      - backgroundColor
+      - elements
+      - height
+      - id
+      - name
+      - width
+      title: CardTemplate
+      type: object
+    CardRow:
+      additionalProperties:
+        type: string
+      description: |
+        Key-value pairs. Keys matching {{tag}} names populate the template; extra keys (e.g. "description") appear as metadata on the public page.
+      title: CardRow
+      type: object
+    CardSheet:
+      example:
+        template:
+          backgroundColor: hsl(220 18% 13%)
+          backgroundImage: backgroundImage
+          elements:
+          - tcgType: tcgType
+            tcgProperty: tcgProperty
+            x: 0.8008281904610115
+            width: 1.4658129805029452
+            "y": 6.027456183070403
+            style:
+              strokeWidth: 2.3021358869347655
+              color: color
+              iconName: iconName
+              imageUrl: https://openapi-generator.tech
+              rotation: 7.061401241503109
+              fontSize: 5.637376656633329
+              svgData: svgData
+              fontWeight: fontWeight
+            id: id
+            tag: tag
+            type: text
+            visibleIfField: visibleIfField
+            height: 5.962133916683182
+          - tcgType: tcgType
+            tcgProperty: tcgProperty
+            x: 0.8008281904610115
+            width: 1.4658129805029452
+            "y": 6.027456183070403
+            style:
+              strokeWidth: 2.3021358869347655
+              color: color
+              iconName: iconName
+              imageUrl: https://openapi-generator.tech
+              rotation: 7.061401241503109
+              fontSize: 5.637376656633329
+              svgData: svgData
+              fontWeight: fontWeight
+            id: id
+            tag: tag
+            type: text
+            visibleIfField: visibleIfField
+            height: 5.962133916683182
+          name: name
+          width: 350
+          id: id
+          height: 490
+        name: name
+        id: id
+        rows:
+        - null
+        - null
+        backTemplate:
+          backgroundColor: hsl(220 18% 13%)
+          backgroundImage: backgroundImage
+          elements:
+          - tcgType: tcgType
+            tcgProperty: tcgProperty
+            x: 0.8008281904610115
+            width: 1.4658129805029452
+            "y": 6.027456183070403
+            style:
+              strokeWidth: 2.3021358869347655
+              color: color
+              iconName: iconName
+              imageUrl: https://openapi-generator.tech
+              rotation: 7.061401241503109
+              fontSize: 5.637376656633329
+              svgData: svgData
+              fontWeight: fontWeight
+            id: id
+            tag: tag
+            type: text
+            visibleIfField: visibleIfField
+            height: 5.962133916683182
+          - tcgType: tcgType
+            tcgProperty: tcgProperty
+            x: 0.8008281904610115
+            width: 1.4658129805029452
+            "y": 6.027456183070403
+            style:
+              strokeWidth: 2.3021358869347655
+              color: color
+              iconName: iconName
+              imageUrl: https://openapi-generator.tech
+              rotation: 7.061401241503109
+              fontSize: 5.637376656633329
+              svgData: svgData
+              fontWeight: fontWeight
+            id: id
+            tag: tag
+            type: text
+            visibleIfField: visibleIfField
+            height: 5.962133916683182
+          name: name
+          width: 350
+          id: id
+          height: 490
+      properties:
+        id:
+          title: id
+          type: string
+        name:
+          title: name
+          type: string
+        template:
+          $ref: "#/components/schemas/CardTemplate"
+        backTemplate:
+          $ref: "#/components/schemas/CardTemplate"
+        rows:
+          items:
+            $ref: "#/components/schemas/CardRow"
+          title: rows
+          type: array
+      required:
+      - id
+      - name
+      - rows
+      - template
+      title: CardSheet
+      type: object
+    CardProject:
+      example:
+        createdAt: 2000-01-23T04:56:07.000+00:00
+        sheets:
+        - template:
+            backgroundColor: hsl(220 18% 13%)
+            backgroundImage: backgroundImage
+            elements:
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            name: name
+            width: 350
+            id: id
+            height: 490
+          name: name
+          id: id
+          rows:
+          - null
+          - null
+          backTemplate:
+            backgroundColor: hsl(220 18% 13%)
+            backgroundImage: backgroundImage
+            elements:
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            name: name
+            width: 350
+            id: id
+            height: 490
+        - template:
+            backgroundColor: hsl(220 18% 13%)
+            backgroundImage: backgroundImage
+            elements:
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            name: name
+            width: 350
+            id: id
+            height: 490
+          name: name
+          id: id
+          rows:
+          - null
+          - null
+          backTemplate:
+            backgroundColor: hsl(220 18% 13%)
+            backgroundImage: backgroundImage
+            elements:
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            - tcgType: tcgType
+              tcgProperty: tcgProperty
+              x: 0.8008281904610115
+              width: 1.4658129805029452
+              "y": 6.027456183070403
+              style:
+                strokeWidth: 2.3021358869347655
+                color: color
+                iconName: iconName
+                imageUrl: https://openapi-generator.tech
+                rotation: 7.061401241503109
+                fontSize: 5.637376656633329
+                svgData: svgData
+                fontWeight: fontWeight
+              id: id
+              tag: tag
+              type: text
+              visibleIfField: visibleIfField
+              height: 5.962133916683182
+            name: name
+            width: 350
+            id: id
+            height: 490
+        name: name
+        description: description
+        isPublic: true
+        id: id
+      properties:
+        id:
+          title: id
+          type: string
+        name:
+          title: name
+          type: string
+        description:
+          title: description
+          type: string
+        createdAt:
+          format: date-time
+          title: createdAt
+          type: string
+        isPublic:
+          description: |
+            When true, the project is viewable at /p/{projectId} as a searchable public card gallery with TCG Schema microdata.
+          title: isPublic
+          type: boolean
+        sheets:
+          items:
+            $ref: "#/components/schemas/CardSheet"
+          title: sheets
+          type: array
+      required:
+      - createdAt
+      - description
+      - id
+      - name
+      - sheets
+      title: CardProject
+      type: object
+    SaveProjectRequest:
+      example:
+        repo: octocat/my-cards
+        project:
+          createdAt: 2000-01-23T04:56:07.000+00:00
+          sheets:
+          - template:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+            name: name
+            id: id
+            rows:
+            - null
+            - null
+            backTemplate:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+          - template:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+            name: name
+            id: id
+            rows:
+            - null
+            - null
+            backTemplate:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+          name: name
+          description: description
+          isPublic: true
+          id: id
+        branch: branch
+      properties:
+        repo:
+          example: octocat/my-cards
+          title: repo
+          type: string
+        branch:
+          title: branch
+          type: string
+        project:
+          $ref: "#/components/schemas/CardProject"
+      required:
+      - project
+      - repo
+      title: SaveProjectRequest
+      type: object
+    SaveProjectResponse:
+      example:
+        path: cardforge/MyProject
+        fileCount: 0
+      properties:
+        path:
+          example: cardforge/MyProject
+          title: path
+          type: string
+        fileCount:
+          title: fileCount
+          type: integer
+      title: SaveProjectResponse
+      type: object
+    ExportProjectRequest:
+      example:
+        project:
+          createdAt: 2000-01-23T04:56:07.000+00:00
+          sheets:
+          - template:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+            name: name
+            id: id
+            rows:
+            - null
+            - null
+            backTemplate:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+          - template:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+            name: name
+            id: id
+            rows:
+            - null
+            - null
+            backTemplate:
+              backgroundColor: hsl(220 18% 13%)
+              backgroundImage: backgroundImage
+              elements:
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              - tcgType: tcgType
+                tcgProperty: tcgProperty
+                x: 0.8008281904610115
+                width: 1.4658129805029452
+                "y": 6.027456183070403
+                style:
+                  strokeWidth: 2.3021358869347655
+                  color: color
+                  iconName: iconName
+                  imageUrl: https://openapi-generator.tech
+                  rotation: 7.061401241503109
+                  fontSize: 5.637376656633329
+                  svgData: svgData
+                  fontWeight: fontWeight
+                id: id
+                tag: tag
+                type: text
+                visibleIfField: visibleIfField
+                height: 5.962133916683182
+              name: name
+              width: 350
+              id: id
+              height: 490
+          name: name
+          description: description
+          isPublic: true
+          id: id
+      properties:
+        project:
+          $ref: "#/components/schemas/CardProject"
+      required:
+      - project
+      title: ExportProjectRequest
+      type: object
+    initiateGitHubAuth_200_response:
+      example:
+        authorization_url: https://openapi-generator.tech
+      properties:
+        authorization_url:
+          description: GitHub OAuth authorization URL to redirect user to
+          format: uri
+          title: authorization_url
+          type: string
+      title: initiateGitHubAuth_200_response
+      type: object
+    Installation_account:
+      example:
+        avatar_url: https://openapi-generator.tech
+        login: login
+        type: User
+      properties:
+        login:
+          title: login
+          type: string
+        avatar_url:
+          format: uri
+          title: avatar_url
+          type: string
+        type:
+          enum:
+          - User
+          - Organization
+          title: type
+          type: string
+      title: Installation_account
+      type: object
+  securitySchemes:
+    sessionAuth:
+      description: |
+        Session token returned by /auth/github/callback. The backend maps this to a GitHub access token internally.
+      scheme: bearer
+      type: http
