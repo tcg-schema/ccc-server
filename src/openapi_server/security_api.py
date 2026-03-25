@@ -1,36 +1,40 @@
 # coding: utf-8
 
-from typing import List
+from contextvars import ContextVar
+from datetime import datetime, timezone
 
-from fastapi import Depends, Security  # noqa: F401
-from fastapi.openapi.models import OAuthFlowImplicit, OAuthFlows  # noqa: F401
-from fastapi.security import (  # noqa: F401
-    HTTPAuthorizationCredentials,
-    HTTPBasic,
-    HTTPBasicCredentials,
-    HTTPBearer,
-    OAuth2,
-    OAuth2AuthorizationCodeBearer,
-    OAuth2PasswordBearer,
-    SecurityScopes,
-)
-from fastapi.security.api_key import APIKeyCookie, APIKeyHeader, APIKeyQuery  # noqa: F401
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from openapi_server.models.extra_models import TokenModel
 
-
 bearer_auth = HTTPBearer()
 
+# Populated by get_token_sessionAuth; read by impl methods.
+current_session: ContextVar[dict] = ContextVar("current_session", default={})
 
-def get_token_sessionAuth(credentials: HTTPAuthorizationCredentials = Depends(bearer_auth)) -> TokenModel:
-    """
-    Check and retrieve authentication information from custom bearer token.
 
-    :param credentials Credentials provided by Authorization header
-    :type credentials: HTTPAuthorizationCredentials
-    :return: Decoded token information or None if token is invalid
-    :rtype: TokenModel | None
-    """
+async def get_token_sessionAuth(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_auth),
+) -> TokenModel:
+    from openapi_server.db import Session as DBSession  # avoid circular import at module load
 
-    ...
+    token = credentials.credentials
+    session = await DBSession.filter(
+        session_token=token,
+        expires_at__gt=datetime.now(timezone.utc),
+    ).first()
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    current_session.set(
+        {
+            "session_token": session.session_token,
+            "github_access_token": session.github_access_token,
+            "user_login": session.user_login,
+            "user_name": session.user_name,
+            "user_avatar_url": session.user_avatar_url,
+        }
+    )
+    return TokenModel(sub=token)
 

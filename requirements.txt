@@ -1,4 +1,6 @@
 aiofiles==23.1.0
+tortoise-orm[asyncpg]>=0.21
+weasyprint>=62.0
 aniso8601==7.0.0
 async-exit-stack==1.0.1
 async-generator==1.10
