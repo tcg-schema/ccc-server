@@ -1,0 +1,9 @@
+tests
+Dockerfile
+docker-compose.yaml
+.openapi-generator
+.openapi-generator-ignore
+**/__pycache__
+*.pyc
+.flake8
+setup.cfg

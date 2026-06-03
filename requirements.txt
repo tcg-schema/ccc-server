@@ -1,16 +1,11 @@
-# CardForge proxy — stateless device-flow + render service. No database.
+# Core runtime deps — used by Vercel (`pip install -r requirements.txt`).
+# WeasyPrint is intentionally NOT here: Vercel's runtime lacks the Pango/Cairo
+# system libraries, so /render/pdf degrades to HTTP 501 there. For a
+# render-capable deployment use the Docker image (setup.cfg installs weasyprint)
+# or `pip install weasyprint` locally alongside the system libs.
 fastapi==0.120.1
 starlette==0.49.1
 uvicorn==0.13.4
 httpx==0.28.1
-weasyprint>=62.0
 pydantic>=2
 python-dotenv==0.17.1
-
-# transitive pins kept from the generated baseline
-certifi==2024.7.4
-h11==0.16.0
-idna==3.7
-Jinja2==3.1.4
-MarkupSafe==2.0.1
-typing-extensions==4.13.2

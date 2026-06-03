@@ -8,8 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the server locally (needs a GitHub OAuth App client id + secret)
 GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... PYTHONPATH=src uvicorn openapi_server.main:app --host 0.0.0.0 --port 8080
 
-# Docker
+# Docker (render-capable: WeasyPrint + system libs)
 GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... docker compose up --build
+
+# Vercel (auth-exchange only; /render/pdf → 501, no Pango/Cairo)
+vercel deploy
 ```
 
 Formatting tools configured: `black` (line length 88) and `isort` (black-compatible profile).
@@ -42,6 +45,17 @@ There is **no database, no session store, and no stored tokens.**
 | `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allow-list (set to the frontend origin in prod). |
 
 The OAuth App's **Authorization callback URL** must be `<frontend-origin>/auth/callback`.
+
+### Deployment
+
+- **Vercel** (auth-exchange only): `api/index.py` exposes the ASGI `app`; `vercel.json`
+  rewrites all paths to it and bundles `src/**` via `includeFiles`. Vercel installs
+  `requirements.txt` (lean — **no WeasyPrint**), so `/render/pdf` returns 501 there.
+- **Docker/container** (render-capable): the Dockerfile runs `pip install .`, and
+  `setup.cfg`'s `install_requires` includes `weasyprint`, so `/render/pdf` works.
+
+So `requirements.txt` (Vercel) and `setup.cfg` (container) intentionally differ:
+WeasyPrint is only in the container path because Vercel lacks its native libs.
 
 ### Modules (`src/openapi_server/`)
 

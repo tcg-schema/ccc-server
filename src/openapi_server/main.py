@@ -85,7 +85,12 @@ async def github_exchange(body: dict):
 
 @app.post("/render/pdf")
 async def render_pdf(body: dict):
-    """Render a CardProject payload to a PDF via WeasyPrint (remote render)."""
+    """Render a CardProject payload to a PDF via WeasyPrint (remote render).
+
+    Requires WeasyPrint + its native libraries (Pango/Cairo). On hosts without
+    them (e.g. Vercel's serverless runtime) this returns 501 — the frontend
+    falls back to its built-in local print-to-PDF.
+    """
     from openapi_server.card_renderer import project_to_pdf
     from openapi_server.models.card_project import CardProject
 
@@ -94,7 +99,19 @@ async def render_pdf(body: dict):
         raise HTTPException(status_code=400, detail="Missing 'project' in request body")
 
     project = CardProject.from_dict(project_data)
-    pdf_bytes = project_to_pdf(project)
+    try:
+        # WeasyPrint is imported lazily inside project_to_pdf, so a missing
+        # package (ImportError) or missing native lib (OSError) surfaces here.
+        pdf_bytes = project_to_pdf(project)
+    except (ImportError, OSError):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Remote PDF rendering is not available on this deployment "
+                "(WeasyPrint/system libraries missing). Use the app's local PDF "
+                "export, or run the render service on a container host."
+            ),
+        )
     filename = project.name.replace(" ", "_") + ".pdf"
     return Response(
         content=pdf_bytes,

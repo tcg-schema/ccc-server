@@ -30,11 +30,27 @@ GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... PYTHONPATH=src uvicorn openapi_ser
 
 Open `http://localhost:8080/docs/` for the interactive API docs.
 
-## Docker
+## Docker (render-capable)
 
 ```bash
 GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... docker compose up --build
 ```
+
+The image installs WeasyPrint + system libs, so `/render/pdf` works.
+
+## Vercel (auth-exchange only)
+
+This repo is Vercel-ready: `api/index.py` exposes the FastAPI ASGI app and
+`vercel.json` routes every path to it (with `src/**` bundled via `includeFiles`).
+
+```bash
+vercel deploy   # or connect the repo in the Vercel dashboard
+```
+
+Set env vars in the Vercel project: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
+`ALLOWED_ORIGINS`. Note: Vercel's runtime has no Pango/Cairo, so `/render/pdf`
+returns **501** there — the frontend falls back to its local print-to-PDF. Use
+the Docker image if you need remote rendering.
 
 ## Endpoints
 
