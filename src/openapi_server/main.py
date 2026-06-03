@@ -1,57 +1,95 @@
 # coding: utf-8
+"""CardForge render & auth proxy — a stateless FastAPI service.
+
+The frontend stores card projects directly in the user's GitHub repos and
+talks to ``api.github.com`` with the user's own token. This service only
+provides the two things a browser cannot do on its own:
+
+1. GitHub OAuth token exchange — the SPA runs the Authorization-Code + PKCE
+   flow itself, then posts the code here to be swapped for a token (GitHub's
+   token endpoint lacks CORS and still requires the client secret).
+2. Optional server-side PDF rendering via WeasyPrint ("remote" render).
+
+There is no database and no session state.
+"""
 
 import os
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from fastapi.security import HTTPBearer
-from tortoise.contrib.fastapi import register_tortoise
 
-from openapi_server.admin import router as AdminRouter
-from openapi_server.apis.auth_api import router as AuthApiRouter
-from openapi_server.apis.projects_api import router as ProjectsApiRouter
-from openapi_server.apis.repos_api import router as ReposApiRouter
+from openapi_server import github_client
 
-_DB_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/cardforge")
-
-# register_tortoise handles startup/teardown via the app lifespan
 app = FastAPI(
-    title="CardForge API",
+    title="CardForge Proxy",
     description=(
-        "Backend API for CardForge. Authentication is handled via GitHub App OAuth flow "
-        "(server-side). The backend manages GitHub tokens and interacts with GitHub on "
-        "behalf of the user."
+        "Stateless helper for CardForge: GitHub OAuth token exchange (CORS shim) "
+        "and optional remote PDF rendering. All persistence lives in the user's "
+        "own GitHub repos."
     ),
-    version="3.0.0",
+    version="4.0.0",
 )
 
-register_tortoise(
-    app,
-    db_url=_DB_URL,
-    modules={"models": ["openapi_server.db"]},
-    generate_schemas=True,
-    add_exception_handlers=True,
+# CORS — the SPA calls this from another origin (Netlify). Comma-separated list,
+# or "*" for local dev.
+_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _origins if o.strip()],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-app.include_router(AuthApiRouter)
-app.include_router(ProjectsApiRouter)
-app.include_router(ReposApiRouter)
-app.include_router(AdminRouter)
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    return {
+        "ok": True,
+        "client_id_configured": bool(github_client.CLIENT_ID),
+        "client_secret_configured": bool(github_client.CLIENT_SECRET),
+    }
 
 
-# ── Extra endpoint: PDF export (not in OpenAPI spec) ─────────────────────────
-
-_bearer = HTTPBearer(auto_error=False)
+# ── GitHub OAuth token exchange (PKCE) ───────────────────────────────────────
 
 
-@app.post("/projects/{projectId}/export/pdf", include_in_schema=False)
-async def export_project_pdf(projectId: str, body: dict):
-    """Generate a PDF from a CardProject payload via WeasyPrint."""
+@app.post("/auth/github/exchange")
+async def github_exchange(body: dict):
+    """Exchange an OAuth authorization code for an access token.
+
+    The browser runs the Authorization-Code + PKCE flow and posts
+    ``{ client_id, code, redirect_uri, code_verifier }`` here. We inject the
+    client secret server-side (GitHub requires it even with PKCE) and return
+    GitHub's JSON verbatim. The token is never stored.
+    """
+    body = body or {}
+    code = body.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing 'code'")
+    try:
+        data = await github_client.exchange_code(
+            code=code,
+            redirect_uri=body.get("redirect_uri"),
+            code_verifier=body.get("code_verifier"),
+            client_id=body.get("client_id"),
+        )
+    except Exception as e:  # noqa: BLE001 — surface upstream failure to client
+        raise HTTPException(status_code=502, detail=f"GitHub token exchange failed: {e}")
+    return data
+
+
+# ── Remote PDF render ────────────────────────────────────────────────────────
+
+
+@app.post("/render/pdf")
+async def render_pdf(body: dict):
+    """Render a CardProject payload to a PDF via WeasyPrint (remote render)."""
     from openapi_server.card_renderer import project_to_pdf
     from openapi_server.models.card_project import CardProject
 
-    project_data = body.get("project")
+    project_data = (body or {}).get("project")
     if not project_data:
         raise HTTPException(status_code=400, detail="Missing 'project' in request body")
 
