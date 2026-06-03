@@ -7,3 +7,7 @@ docker-compose.yaml
 *.pyc
 .flake8
 setup.cfg
+# Hide pyproject.toml so @vercel/python uses pip + requirements.txt instead of
+# uv (our pyproject has only black/isort config — no [project] table — so
+# `uv lock` fails).
+pyproject.toml
