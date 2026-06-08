@@ -65,6 +65,24 @@ paths:
                 $ref: "#/components/schemas/TokenResponse"
         "400":
           description: Missing code
+  /proxy/image:
+    get:
+      summary: Re-serve an external image (CORS-clean)
+      operationId: proxyImage
+      description: Fetches an http(s) image server-side and returns it with CORS headers, so the browser can rasterise cards that use cross-origin image URLs without tainting the canvas.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The image bytes
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        "400": { description: Invalid url }
+        "415": { description: Not an image }
   /render/pdf:
     post:
       summary: Render a CardProject to PDF (remote render)

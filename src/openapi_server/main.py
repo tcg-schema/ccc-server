@@ -15,6 +15,7 @@ There is no database and no session state.
 
 import os
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -50,6 +51,34 @@ async def healthz():
         "client_id_configured": bool(github_client.CLIENT_ID),
         "client_secret_configured": bool(github_client.CLIENT_SECRET),
     }
+
+
+# ── Image proxy ──────────────────────────────────────────────────────────────
+
+
+@app.get("/proxy/image")
+async def proxy_image(url: str):
+    """Fetch an external image server-side and re-serve it (CORS-clean).
+
+    Lets the browser rasterise cards (PNG/PDF) that reference cross-origin image
+    URLs without tainting the canvas. CORS headers are added by the middleware.
+    """
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            r = await client.get(url, headers={"User-Agent": "CardForge/1.0"})
+            r.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
+
+    content_type = r.headers.get("content-type", "application/octet-stream")
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Not an image")
+    if len(r.content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    return Response(content=r.content, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ── GitHub OAuth token exchange (PKCE) ───────────────────────────────────────

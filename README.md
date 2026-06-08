@@ -58,4 +58,5 @@ the Docker image if you need remote rendering.
 |---|---|---|
 | GET  | `/healthz` | Liveness + whether the client id/secret are configured |
 | POST | `/auth/github/exchange` | Swap an OAuth code (+ PKCE verifier) for a token |
+| GET  | `/proxy/image?url=` | Re-serve an external image CORS-clean (for client-side PNG/PDF render) |
 | POST | `/render/pdf` | Render a `CardProject` to PDF (WeasyPrint) |
